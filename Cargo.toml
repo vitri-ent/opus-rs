@@ -14,4 +14,4 @@ repository = "https://github.com/SpaceManiac/opus-rs"
 documentation = "https://docs.rs/opus/0.3.0/opus"
 
 [dependencies]
-audiopus_sys = "0.2.0"
+unsafe-libopus = { git = "https://github.com/DCNick3/unsafe-libopus", rev = "a84a3bab86cec409b2e08792a8bbee371e21b8a1" }

@@ -11,13 +11,13 @@
 //! Only brief descriptions are included here. For detailed information, consult
 //! the [libopus documentation](https://opus-codec.org/docs/opus_api-1.1.2/).
 #![warn(missing_docs)]
+#![allow(unused_unsafe)]
 
-extern crate audiopus_sys as ffi;
+extern crate unsafe_libopus as ffi;
 
 use std::convert::TryFrom;
-use std::ffi::CStr;
-use std::os::raw::c_int;
 use std::marker::PhantomData;
+use std::os::raw::c_int;
 
 // ============================================================================
 // Constants
@@ -123,8 +123,7 @@ impl ErrorCode {
 
 	/// Get a human-readable error string for this error code.
 	pub fn description(self) -> &'static str {
-		// should always be ASCII and non-null for any input
-		unsafe { CStr::from_ptr(ffi::opus_strerror(self as c_int)) }.to_str().unwrap()
+		ffi::opus_strerror(self as c_int)
 	}
 }
 
@@ -163,8 +162,7 @@ impl Bitrate {
 /// determine whether they have a fixed-point or floating-point build at
 /// runtime.
 pub fn version() -> &'static str {
-	// verison string should always be ASCII
-	unsafe { CStr::from_ptr(ffi::opus_get_version_string()) }.to_str().unwrap()
+	ffi::opus_get_version_string()
 }
 
 macro_rules! ffi {
@@ -177,8 +175,8 @@ macro_rules! ffi {
 }
 
 macro_rules! ctl {
-	($f:ident, $this:ident, $ctl:path, $($rest:expr),*) => {
-		match unsafe { ffi::$f($this.ptr, $ctl, $($rest),*) } {
+	($f:ident, $ptr:expr, $ctl:path, $($rest:expr),*) => {
+		match unsafe { ffi::$f!($ptr, $ctl, $($rest),*) } {
 			code if code < 0 => return Err(Error::from_code(
 				concat!(stringify!($f), "(", stringify!($ctl), ")"),
 				code,
@@ -193,7 +191,7 @@ macro_rules! ctl {
 
 macro_rules! enc_ctl {
 	($this:ident, $ctl:path $(, $rest:expr)*) => {
-		ctl!(opus_encoder_ctl, $this, $ctl, $($rest),*)
+		ctl!(opus_encoder_ctl, &mut *$this.ptr, $ctl, $($rest),*)
 	}
 }
 
@@ -454,27 +452,22 @@ unsafe impl Send for Encoder {}
 
 macro_rules! dec_ctl {
 	($this:ident, $ctl:path $(, $rest:expr)*) => {
-		ctl!(opus_decoder_ctl, $this, $ctl, $($rest),*)
+		ctl!(opus_decoder_ctl, &mut $this.inner, $ctl, $($rest),*)
 	}
 }
 
 /// An Opus decoder with associated state.
-#[derive(Debug)]
 pub struct Decoder {
-	ptr: *mut ffi::OpusDecoder,
+	inner: ffi::OpusDecoder,
 	channels: Channels,
 }
 
 impl Decoder {
 	/// Create and initialize a decoder.
 	pub fn new(sample_rate: u32, channels: Channels) -> Result<Decoder> {
-		let mut error = 0;
-		let ptr =
-			unsafe { ffi::opus_decoder_create(sample_rate as i32, channels as c_int, &mut error) };
-		if error != ffi::OPUS_OK || ptr.is_null() {
-			Err(Error::from_code("opus_decoder_create", error))
-		} else {
-			Ok(Decoder { ptr, channels })
+		match unsafe { ffi::OpusDecoder::new(sample_rate as i32, channels as usize) } {
+			Ok(inner) => Ok(Decoder { inner, channels }),
+			Err(e) => Err(Error::from_code("opus_decoder_create", e)),
 		}
 	}
 
@@ -491,7 +484,7 @@ impl Decoder {
 		};
 		let len = ffi!(
 			opus_decode,
-			self.ptr,
+			&mut self.inner,
 			ptr,
 			len(input),
 			output.as_mut_ptr(),
@@ -514,7 +507,7 @@ impl Decoder {
 		};
 		let len = ffi!(
 			opus_decode_float,
-			self.ptr,
+			&mut self.inner,
 			ptr,
 			len(input),
 			output.as_mut_ptr(),
@@ -525,8 +518,8 @@ impl Decoder {
 	}
 
 	/// Get the number of samples *per channel* of an Opus packet.
-	pub fn get_nb_samples(&self, packet: &[u8]) -> Result<usize> {
-		let len = ffi!(opus_decoder_get_nb_samples, self.ptr, packet.as_ptr(), packet.len() as i32);
+	pub fn get_nb_samples(&mut self, packet: &[u8]) -> Result<usize> {
+		let len = ffi!(opus_decoder_get_nb_samples, &mut self.inner, packet);
 		Ok(len as usize)
 	}
 
@@ -604,12 +597,6 @@ impl Decoder {
 	}
 }
 
-impl Drop for Decoder {
-	fn drop(&mut self) {
-		unsafe { ffi::opus_decoder_destroy(self.ptr) }
-	}
-}
-
 // See `unsafe impl Send for Encoder`.
 unsafe impl Send for Decoder {}
 
@@ -646,14 +633,13 @@ pub mod packet {
 
 	/// Get the number of frames in an Opus packet.
 	pub fn get_nb_frames(packet: &[u8]) -> Result<usize> {
-		let frames = ffi!(opus_packet_get_nb_frames, packet.as_ptr(), len(packet));
+		let frames = ffi!(opus_packet_get_nb_frames, packet);
 		Ok(frames as usize)
 	}
 
 	/// Get the number of samples of an Opus packet.
 	pub fn get_nb_samples(packet: &[u8], sample_rate: u32) -> Result<usize> {
-		let frames =
-			ffi!(opus_packet_get_nb_samples, packet.as_ptr(), len(packet), sample_rate as c_int);
+		let frames = ffi!(opus_packet_get_nb_samples, packet, sample_rate as c_int);
 		Ok(frames as usize)
 	}
 
@@ -662,8 +648,7 @@ pub mod packet {
 		if packet.is_empty() {
 			return Err(Error::bad_arg("opus_packet_get_samples_per_frame"));
 		}
-		let samples =
-			ffi!(opus_packet_get_samples_per_frame, packet.as_ptr(), sample_rate as c_int);
+		let samples = ffi!(opus_packet_get_samples_per_frame, packet, sample_rate as c_int);
 		Ok(samples as usize)
 	}
 
